@@ -16,6 +16,8 @@
 
 unsigned long previousMillisSensor = 0;
 const long intervalSensor = 5000;
+unsigned long previousMillisData = 0; // Menyimpan waktu terakhir untuk mengambil jadwal
+const long intervalData = 5000; // Interval 5 detik untuk mengambil jadwal
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -29,14 +31,17 @@ NTPClient timeClient(udp, "pool.ntp.org", 7 * 3600, 60000);
 // Variabel untuk menyimpan jadwal
 String jadwal1 = "07:00";     //Jadwal Default
 String jadwal2 = "17:00";     //Jadwal 
+float ppm = 0;
+float batasPpm = 0;
 
 bool statusKipas = false;
 bool statusLampu = false;
 
 // WiFi setup
-const char* ssid = "UPCA GANK";
-const char* password = "rondoanaklimo";
+const char* ssid = "aiko";
+const char* password = "menujubersama";
 String serverUrl = "http://lemarihidroponik.coeagriculture.my.id/post_data.php";
+String dataUrl = "http://lemarihidroponik.coeagriculture.my.id/get_data.php"; 
 
 void setup() {
   Serial.begin(115200);
@@ -56,6 +61,12 @@ void loop() {
 
   // Memeriksa koneksi WiFi
   checkWiFiConnection();
+
+  // Ambil data jadwal setiap 5 detik
+  if (currentMillis - previousMillisData >= intervalData) {
+    previousMillisData = currentMillis; // Update waktu terakhir
+    getData(); // Panggil fungsi untuk mengambil jadwal
+  }
 
   if (currentMillis - previousMillisSensor >= intervalSensor) {
     previousMillisSensor = currentMillis; // Update waktu terakhir
@@ -102,6 +113,8 @@ void readSensors(String timeString) {
   sensors.requestTemperatures();
   float suhuAir = sensors.getTempCByIndex(0); // Mengambil suhu dalam Celsius
 
+  Serial.println("-----Data Sensor-----");
+
   Serial.print("TDS Value: ");
   Serial.println(analogValue);
   
@@ -121,6 +134,47 @@ void readSensors(String timeString) {
   sendDataToServer(analogValue, suhuAir, suhuRuang);
 
   controlRelays(timeString, suhuAir);
+}
+
+void getData() {
+  HTTPClient http;
+  http.begin(dataUrl);  // Mengakses endpoint PHP untuk jadwal
+
+  int httpResponseCode = http.GET();  // Mengirim request GET
+
+  if (httpResponseCode > 0) {
+    String payload = http.getString();  // Mendapatkan response dalam bentuk string
+
+    // Parsing JSON response
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, payload);
+
+    if (error) {
+      Serial.print("Error parsing JSON: ");
+      Serial.println(error.f_str());
+      return;
+    }
+
+    jadwal1 = doc["jadwal1"].as<String>();  // Mengambil nilai jadwal1
+    jadwal2 = doc["jadwal2"].as<String>();  // Mengambil nilai 
+    ppm = doc["ppm"].as<float>();
+    batasPpm = doc ["batasPpm"].as<float>();
+
+    Serial.println("-----Response from server-----");
+    Serial.println(payload);
+    Serial.print("Jadwal 1: ");
+    Serial.println(jadwal1);
+    Serial.print("Jadwal 2: ");
+    Serial.println(jadwal2);
+    Serial.print("PPM: ");
+    Serial.println(ppm);
+    Serial.print("Ketentuan PPM: ");
+    Serial.println(batasPpm);
+  } else {
+    Serial.print("Error on HTTP request: ");
+    Serial.println(httpResponseCode);
+  }
+  http.end();
 }
 
 void sendDataToServer(int analogValue, float suhuAir, float suhuRuang) {
@@ -154,11 +208,9 @@ String getFormattedTime() {
   return formattedTime.substring(0, 5);     // Ambil format HH:MM
 }
 
-void setRelaysKipas(int stateKipas) {
-  digitalWrite(RELAY_KIPAS, stateKipas);
-}
-
 void controlRelays(String timeString, float suhuAir) {
+  Serial.println("-----Status-----");
+
   if (timeString >= jadwal1 && timeString <= jadwal2) {
     digitalWrite(RELAY_LAMPU, LOW);
     statusLampu = true;
@@ -177,5 +229,13 @@ void controlRelays(String timeString, float suhuAir) {
     digitalWrite(RELAY_KIPAS, HIGH);
     statusKipas = false;
     Serial.println("Kipas Mati");
+  }
+
+  if (batasPpm <= ppm) {
+    digitalWrite(RELAY_PPM, LOW);
+    Serial.println("Pemberian nutrisi Aktif");
+  } else {
+    digitalWrite(RELAY_PPM, HIGH);
+    Serial.println("Pemberian nutrisi Mati");
   }
 }
